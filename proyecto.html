@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CRT Simulator - Documentado</title>
+    <style>
+        body {
+            background-color: black;
+            color: lime;
+            font-family: monospace;
+        }
+        #views {
+            display: flex;
+            flex-wrap: wrap;
+        }
+        canvas {
+            border: 1px solid lime;
+            margin: 10px;
+        }
+        #controls {
+            margin: 10px;
+        }
+        label {
+            display: block;
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>CRT Simulator - Simulador de Tubo de Rayos Catódicos</h1>
+    <div id="views">
+        <div>
+            <h3>Vista Lateral (Side View)</h3>
+            <canvas id="side" width="600" height="300"></canvas>
+        </div>
+        <div>
+            <h3>Vista Superior (Top View)</h3>
+            <canvas id="top" width="600" height="300"></canvas>
+        </div>
+        <div>
+            <h3>Pantalla (Screen)</h3>
+            <canvas id="screen" width="400" height="400"></canvas>
+        </div>
+    </div>
+    <div id="controls">
+        <label>Voltaje de Aceleración Va (V): <input type="range" id="va" min="100" max="5000" value="1000" step="100"> <span id="va_val">1000</span></label>
+        <label>Voltaje Vertical Vv (V): <input type="range" id="vv" min="-100" max="100" value="0" step="1"> <span id="vv_val">0</span></label>
+        <label>Voltaje Horizontal Vh (V): <input type="range" id="vh" min="-100" max="100" value="0" step="1"> <span id="vh_val">0</span></label>
+        <label>Tiempo de Persistencia (s): <input type="range" id="pers" min="0.01" max="2" step="0.01" value="0.5"> <span id="pers_val">0.5</span></label>
+        <button id="mode">Cambiar a Modo Lissajous</button>
+        <div id="liss_controls" style="display:none">
+            <label>Frecuencia Vertical (Hz): <input type="number" id="fv" min="0.1" max="10" step="0.1" value="1"></label>
+            <label>Frecuencia Horizontal (Hz): <input type="number" id="fh" min="0.1" max="10" step="0.1" value="1"></label>
+            <label>Fase (grados): <input type="range" id="phase" min="0" max="360" value="0" step="1"> <span id="phase_val">0</span></label>
+        </div>
+    </div>
+
+    <script>
+        /*
+        ========================================================================
+        SIMULADOR DE TUBO DE RAYOS CATÓDICOS (CRT)
+        ========================================================================
+        
+        FUNDAMENTOS FÍSICOS:
+        -------------------
+        1. ACELERACIÓN INICIAL:
+           Un electrón es acelerado desde el reposo por un voltaje Va.
+           Por conservación de energía: ½mv₀² = eVa
+           Por tanto: v₀ = √(2eVa/m)
+        
+        2. DEFLEXIÓN ELÉCTRICA:
+           Cuando el electrón pasa entre placas paralelas con voltaje V y 
+           separación d, experimenta un campo eléctrico uniforme:
+           E = V/d
+           
+           La fuerza sobre el electrón es: F = eE = eV/d
+           La aceleración resultante es: a = F/m = eV/(md)
+        
+        3. CINEMÁTICA:
+           El movimiento se describe con las ecuaciones de cinemática:
+           - Posición: x(t) = x₀ + v₀t + ½at²
+           - Velocidad: v(t) = v₀ + at
+           
+        4. INTEGRACIÓN NUMÉRICA:
+           Se usa el método de Euler para resolver las ecuaciones diferenciales:
+           x_{n+1} = x_n + v_n × Δt + ½a_n × (Δt)²
+           v_{n+1} = v_n + a_n × Δt
+        */
+
+        // ====================================================================
+        // CONSTANTES FÍSICAS FUNDAMENTALES
+        // ====================================================================
+        const e = 1.602e-19;    // Carga del electrón (C) - valor absoluto para simplicidad
+        const m = 9.109e-31;    // Masa del electrón (kg)
+        
+        // ====================================================================
+        // GEOMETRÍA DEL TUBO CRT
+        // ====================================================================
+        const d = 0.01;                    // Separación entre placas deflectoras (m)
+        const L_plate = 0.05;              // Longitud de las placas deflectoras (m)
+        const D_gun_to_vert = 0.1;        // Distancia del cañón a placas verticales (m)
+        const D_vert_to_horz = 0.02;      // Distancia entre placas verticales y horizontales (m)
+        const D_horz_to_screen = 0.3;     // Distancia de placas horizontales a pantalla (m)
+        
+        // Posiciones x de los componentes del tubo
+        const x_vert_start = D_gun_to_vert;                    // Inicio de placas verticales
+        const x_vert_end = x_vert_start + L_plate;            // Final de placas verticales
+        const x_horz_start = x_vert_end + D_vert_to_horz;     // Inicio de placas horizontales
+        const x_horz_end = x_horz_start + L_plate;            // Final de placas horizontales
+        const x_screen = x_horz_end + D_horz_to_screen;       // Posición de la pantalla
+        
+        const screen_half = 0.1;          // Mitad del tamaño de la pantalla (m)
+        const Vm = 100;                   // Voltaje máximo de deflexión para modo Lissajous (V)
+        const dx_step = 0.005;            // Paso de integración espacial (m)
+
+        // ====================================================================
+        // ELEMENTOS DEL DOM Y CONTEXTOS DE CANVAS
+        // ====================================================================
+        const side_canvas = document.getElementById('side');
+        const side_ctx = side_canvas.getContext('2d');
+        const top_canvas = document.getElementById('top');
+        const top_ctx = top_canvas.getContext('2d');
+        const screen_canvas = document.getElementById('screen');
+        const screen_ctx = screen_canvas.getContext('2d');
+
+        // ====================================================================
+        // VARIABLES DE ESTADO DEL SIMULADOR
+        // ====================================================================
+        let mode = 'manual';               // Modo actual: 'manual' o 'lissajous'
+        let t = 0;                         // Tiempo para animaciones Lissajous
+        let last_t = performance.now() / 1000; // Tiempo del frame anterior
+        let prev_hit = null;               // Punto anterior de impacto para trazar líneas
+        let pers = 0.5;                   // Tiempo de persistencia del fósforo
+
+        /**
+         * Actualiza los valores mostrados en la interfaz
+         */
+        function update_display_values() {
+            document.getElementById('va_val').textContent = document.getElementById('va').value;
+            document.getElementById('vv_val').textContent = document.getElementById('vv').value;
+            document.getElementById('vh_val').textContent = document.getElementById('vh').value;
+            document.getElementById('pers_val').textContent = document.getElementById('pers').value;
+            document.getElementById('phase_val').textContent = document.getElementById('phase').value;
+        }
+
+        /**
+         * ECUACIÓN FÍSICA: VELOCIDAD INICIAL POR ACELERACIÓN
+         * 
+         * Calcula la velocidad inicial del electrón después de ser acelerado
+         * por el voltaje de aceleración Va.
+         * 
+         * FÍSICA:
+         * - Energía cinética adquirida: Ek = eVa
+         * - Energía cinética: Ek = ½mv²
+         * - Igualando: ½mv² = eVa
+         * - Resolviendo para v: v = √(2eVa/m)
+         * 
+         * @param {number} Va - Voltaje de aceleración (V)
+         * @returns {number} - Velocidad inicial en x (m/s)
+         */
+        function get_vx(Va) {
+            return Math.sqrt(2 * e * Va / m);
+        }
+
+        /**
+         * NÚCLEO DEL SIMULADOR: CÁLCULO DE TRAYECTORIA
+         * 
+         * Computa la trayectoria del electrón usando integración numérica
+         * y las ecuaciones de la electrostática y cinemática.
+         * 
+         * FÍSICA APLICADA:
+         * 1. Campo eléctrico entre placas: E = V/d
+         * 2. Fuerza sobre electrón: F = eE = eV/d
+         * 3. Aceleración: a = F/m = eV/(md)
+         * 4. Integración cinemática:
+         *    - Δx = vx × Δt
+         *    - Δy = vy × Δt + ½ay × (Δt)²
+         *    - Δz = vz × Δt + ½az × (Δt)²
+         *    - Δvy = ay × Δt
+         *    - Δvz = az × Δt
+         * 
+         * @param {number} Va - Voltaje de aceleración (V)
+         * @param {number} Vv - Voltaje de deflexión vertical (V)
+         * @param {number} Vh - Voltaje de deflexión horizontal (V)
+         * @returns {object} - Trayectorias y punto de impacto
+         */
+        function compute_trajectory(Va, Vv, Vh) {
+            // VELOCIDAD INICIAL: Aplicar ecuación v = √(2eVa/m)
+            const vx = get_vx(Va);
+            
+            // CONDICIONES INICIALES
+            let x = 0;      // Posición longitudinal (m)
+            let y = 0;      // Posición horizontal (m)
+            let z = 0;      // Posición vertical (m)
+            let vy = 0;     // Velocidad horizontal (m/s)
+            let vz = 0;     // Velocidad vertical (m/s)
+            
+            // Arrays para almacenar puntos de la trayectoria
+            const points_side = [];  // Vista lateral (x-z)
+            const points_top = [];   // Vista superior (x-y)
+            
+            // INTEGRACIÓN NUMÉRICA: Método de Euler
+            while (x < x_screen + dx_step / 2) {
+                // Guardar punto actual
+                points_side.push({x, z});
+                points_top.push({x, y});
+                
+                // CÁLCULO DE ACELERACIONES SEGÚN POSICIÓN
+                let a_y = 0;  // Aceleración horizontal
+                let a_z = 0;  // Aceleración vertical
+                
+                // DEFLEXIÓN VERTICAL: Placas verticales afectan movimiento en Z
+                // ECUACIÓN: az = (e/m) × (Vv/d)
+                if (x >= x_vert_start && x < x_vert_end) {
+                    a_z = (e / m) * (Vv / d); // Signo: Vv positivo deflecta hacia +z
+                }
+                
+                // DEFLEXIÓN HORIZONTAL: Placas horizontales afectan movimiento en Y
+                // ECUACIÓN: ay = (e/m) × (Vh/d)
+                if (x >= x_horz_start && x < x_horz_end) {
+                    a_y = (e / m) * (Vh / d); // Signo: Vh positivo deflecta hacia +y
+                }
+                
+                // PASO DE INTEGRACIÓN
+                const this_dx = Math.min(dx_step, x_screen - x);
+                if (this_dx <= 0) break;
+                
+                // CONVERSIÓN ESPACIAL A TEMPORAL: Δt = Δx/vx
+                const dt = this_dx / vx;
+                
+                // INTEGRACIÓN CINEMÁTICA: Ecuaciones de movimiento uniformemente acelerado
+                // Posición: s = s₀ + v₀t + ½at²
+                y += vy * dt + 0.5 * a_y * dt * dt;
+                z += vz * dt + 0.5 * a_z * dt * dt;
+                
+                // Velocidad: v = v₀ + at
+                vy += a_y * dt;
+                vz += a_z * dt;
+                
+                // Avanzar en x
+                x += this_dx;
+            }
+            
+            // Punto final en la pantalla
+            points_side.push({x: x_screen, z});
+            points_top.push({x: x_screen, y});
+            
+            return {
+                side: points_side,
+                top: points_top,
+                hit: {y, z}  // Coordenadas de impacto en la pantalla
+            };
+        }
+
+        /**
+         * Dibuja la estructura del tubo CRT en vista lateral (x-z)
+         * Muestra las placas verticales y la trayectoria del haz
+         */
+        function draw_tube_side(ctx, w, h, scale_x, scale_yz, off_x, off_z) {
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 1;
+            
+            // Eje central del tubo
+            ctx.beginPath();
+            ctx.moveTo(off_x, off_z);
+            ctx.lineTo(off_x + x_screen * scale_x, off_z);
+            ctx.stroke();
+            
+            // Placas verticales (aparecen como líneas horizontales separadas en z)
+            const plate_sep_px = d * scale_yz;
+            const vert_start_px = off_x + x_vert_start * scale_x;
+            const vert_end_px = off_x + x_vert_end * scale_x;
+            ctx.beginPath();
+            ctx.moveTo(vert_start_px, off_z - plate_sep_px / 2);
+            ctx.lineTo(vert_end_px, off_z - plate_sep_px / 2);
+            ctx.moveTo(vert_start_px, off_z + plate_sep_px / 2);
+            ctx.lineTo(vert_end_px, off_z + plate_sep_px / 2);
+            ctx.stroke();
+            
+            // Pantalla (línea vertical)
+            const screen_px = off_x + x_screen * scale_x;
+            ctx.beginPath();
+            ctx.moveTo(screen_px, off_z - screen_half * scale_yz * 1.2);
+            ctx.lineTo(screen_px, off_z + screen_half * scale_yz * 1.2);
+            ctx.stroke();
+            
+            // Cañón de electrones (círculo simple)
+            ctx.beginPath();
+            ctx.arc(off_x, off_z, 5, 0, 2 * Math.PI);
+            ctx.stroke();
+        }
+
+        /**
+         * Dibuja la estructura del tubo CRT en vista superior (x-y)
+         * Muestra las placas horizontales y la trayectoria del haz
+         */
+        function draw_tube_top(ctx, w, h, scale_x, scale_yz, off_x, off_y) {
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 1;
+            
+            // Eje central del tubo
+            ctx.beginPath();
+            ctx.moveTo(off_x, off_y);
+            ctx.lineTo(off_x + x_screen * scale_x, off_y);
+            ctx.stroke();
+            
+            // Placas horizontales (líneas horizontales separadas en y)
+            const plate_sep_px = d * scale_yz;
+            const horz_start_px = off_x + x_horz_start * scale_x;
+            const horz_end_px = off_x + x_horz_end * scale_x;
+            ctx.beginPath();
+            ctx.moveTo(horz_start_px, off_y - plate_sep_px / 2);
+            ctx.lineTo(horz_end_px, off_y - plate_sep_px / 2);
+            ctx.moveTo(horz_start_px, off_y + plate_sep_px / 2);
+            ctx.lineTo(horz_end_px, off_y + plate_sep_px / 2);
+            ctx.stroke();
+            
+            // Pantalla
+            const screen_px = off_x + x_screen * scale_x;
+            ctx.beginPath();
+            ctx.moveTo(screen_px, off_y - screen_half * scale_yz * 1.2);
+            ctx.lineTo(screen_px, off_y + screen_half * scale_yz * 1.2);
+            ctx.stroke();
+            
+            // Cañón de electrones
+            ctx.beginPath();
+            ctx.arc(off_x, off_y, 5, 0, 2 * Math.PI);
+            ctx.stroke();
+        }
+
+        /**
+         * BUCLE PRINCIPAL DE ANIMACIÓN
+         * 
+         * Coordina todos los cálculos físicos y la visualización.
+         * Se ejecuta en cada frame usando requestAnimationFrame.
+         */
+        function loop() {
+            update_display_values();
+            
+            // Control de tiempo para animaciones
+            const now = performance.now() / 1000;
+            const dt = now - last_t;
+            last_t = now;
+
+            // Obtener parámetros de entrada
+            let Va = parseFloat(document.getElementById('va').value);
+            pers = parseFloat(document.getElementById('pers').value);
+            let Vv, Vh;
+
+            // GENERACIÓN DE VOLTAJES SEGÚN EL MODO
+            if (mode === 'lissajous') {
+                // MODO LISSAJOUS: Voltajes sinusoidales para patrones complejos
+                // ECUACIONES: 
+                // Vv(t) = Vm × sin(2πfv × t)
+                // Vh(t) = Vm × sin(2πfh × t + φ)
+                t += dt;
+                const fv = parseFloat(document.getElementById('fv').value);
+                const fh = parseFloat(document.getElementById('fh').value);
+                const phase = parseFloat(document.getElementById('phase').value) * Math.PI / 180;
+                
+                Vv = Vm * Math.sin(2 * Math.PI * fv * t);
+                Vh = Vm * Math.sin(2 * Math.PI * fh * t + phase);
+            } else {
+                // MODO MANUAL: Voltajes constantes controlados por usuario
+                Vv = parseFloat(document.getElementById('vv').value);
+                Vh = parseFloat(document.getElementById('vh').value);
+            }
+
+            // CÁLCULO PRINCIPAL: Resolver ecuaciones de movimiento
+            const traj = compute_trajectory(Va, Vv, Vh);
+            const hit = traj.hit;
+
+            // ================================================================
+            // RENDERIZADO DE VISTA LATERAL (X-Z)
+            // ================================================================
+            const side_w = side_canvas.width;
+            const side_h = side_canvas.height;
+            const scale_x_side = (side_w - 40) / x_screen;
+            const max_def = screen_half * 1.5;
+            const scale_yz_side = (side_h / 2 - 40) / max_def;
+            const off_x_side = 20;
+            const off_z = side_h / 2;
+            
+            side_ctx.clearRect(0, 0, side_w, side_h);
+            draw_tube_side(side_ctx, side_w, side_h, scale_x_side, scale_yz_side, off_x_side, off_z);
+            
+            // Dibujar trayectoria del electrón
+            side_ctx.beginPath();
+            side_ctx.moveTo(off_x_side + traj.side[0].x * scale_x_side, off_z - traj.side[0].z * scale_yz_side);
+            for (let p of traj.side) {
+                side_ctx.lineTo(off_x_side + p.x * scale_x_side, off_z - p.z * scale_yz_side);
+            }
+            side_ctx.strokeStyle = 'lime';
+            side_ctx.lineWidth = 2;
+            side_ctx.stroke();
+
+            // ================================================================
+            // RENDERIZADO DE VISTA SUPERIOR (X-Y)
+            // ================================================================
+            const top_w = top_canvas.width;
+            const top_h = top_canvas.height;
+            const scale_x_top = (top_w - 40) / x_screen;
+            const scale_yz_top = (top_h / 2 - 40) / max_def;
+            const off_x_top = 20;
+            const off_y = top_h / 2;
+            
+            top_ctx.clearRect(0, 0, top_w, top_h);
+            draw_tube_top(top_ctx, top_w, top_h, scale_x_top, scale_yz_top, off_x_top, off_y);
+            
+            // Dibujar trayectoria del electrón
+            top_ctx.beginPath();
+            top_ctx.moveTo(off_x_top + traj.top[0].x * scale_x_top, off_y - traj.top[0].y * scale_yz_top);
+            for (let p of traj.top) {
+                top_ctx.lineTo(off_x_top + p.x * scale_x_top, off_y - p.y * scale_yz_top);
+            }
+            top_ctx.strokeStyle = 'lime';
+            top_ctx.lineWidth = 2;
+            top_ctx.stroke();
+
+            // ================================================================
+            // SIMULACIÓN DE PANTALLA CON PERSISTENCIA DE FÓSFORO
+            // ================================================================
+            const sw = screen_canvas.width;
+            const sh = screen_canvas.height;
+            
+            // Efecto de desvanecimiento (decay del fósforo)
+            let fade_alpha = dt / pers;
+            if (fade_alpha > 1) fade_alpha = 1;
+            screen_ctx.globalAlpha = fade_alpha;
+            screen_ctx.fillStyle = 'black';
+            screen_ctx.fillRect(0, 0, sw, sh);
+            screen_ctx.globalAlpha = 1;
+
+            // Dibujar nuevo punto/línea si el haz impacta la pantalla
+            if (Math.abs(hit.y) <= screen_half && Math.abs(hit.z) <= screen_half) {
+                // Transformar coordenadas físicas a píxeles de pantalla
+                const screen_scale = (sw / 2) / screen_half;
+                const cx = sw / 2 + hit.y * screen_scale;
+                const cz = sh / 2 - hit.z * screen_scale; // z positivo hacia arriba
+                
+                // Dibujar línea desde punto anterior (para trazas continuas)
+                if (prev_hit) {
+                    const prev_cx = sw / 2 + prev_hit.y * screen_scale;
+                    const prev_cz = sh / 2 - prev_hit.z * screen_scale;
+                    screen_ctx.beginPath();
+                    screen_ctx.moveTo(prev_cx, prev_cz);
+                    screen_ctx.lineTo(cx, cz);
+                    screen_ctx.strokeStyle = 'lime';
+                    screen_ctx.lineWidth = 2;
+                    screen_ctx.stroke();
+                }
+                prev_hit = {y: hit.y, z: hit.z};
+            } else {
+                prev_hit = null; // Reset si el haz sale fuera de pantalla
+            }
+
+            // Continuar animación
+            requestAnimationFrame(loop);
+        }
+
+        // ====================================================================
+        // CONTROL DE INTERFAZ: Cambio entre modos manual y Lissajous
+        // ====================================================================
+        document.getElementById('mode').addEventListener('click', () => {
+            if (mode === 'manual') {
+                mode = 'lissajous';
+                document.getElementById('mode').textContent = 'Cambiar a Modo Manual';
+                document.getElementById('liss_controls').style.display = 'block';
+                document.getElementById('vv').disabled = true;
+                document.getElementById('vh').disabled = true;
+                prev_hit = null; // Reset traza
+                t = 0;
+            } else {
+                mode = 'manual';
+                document.getElementById('mode').textContent = 'Cambiar a Modo Lissajous';
+                document.getElementById('liss_controls').style.display = 'none';
+                document.getElementById('vv').disabled = false;
+                document.getElementById('vh').disabled = false;
+                prev_hit = null;
+            }
+        });
+
+        // ====================================================================
+        // INICIALIZACIÓN: Comenzar el bucle de simulación
+        // ====================================================================
+        loop();
+    </script>
+</body>
+</html>
