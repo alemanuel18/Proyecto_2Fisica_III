@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CRT Simulator - Documentado</title>
+    <title>CRT Simulator</title>
     <style>
         body {
             background-color: black;
@@ -244,7 +244,7 @@
         }
 
         /**
-         * ECUACIÓN FÍSICA: VELOCIDAD INICIAL POR ACELERACIÓN
+         * VELOCIDAD INICIAL POR ACELERACIÓN
          * 
          * Calcula la velocidad inicial del electrón después de ser acelerado
          * por el voltaje de aceleración Va.
@@ -263,7 +263,7 @@
         }
 
         /**
-         * NÚCLEO DEL SIMULADOR: CÁLCULO DE TRAYECTORIA
+         * CÁLCULO DE TRAYECTORIA
          * 
          * Computa la trayectoria del electrón usando integración numérica
          * y las ecuaciones de la electrostática y cinemática.
@@ -549,6 +549,13 @@
                     screen_ctx.lineWidth = 2;
                     screen_ctx.stroke();
                 }
+
+                // Dibujar punto actual más brillante
+                screen_ctx.beginPath();
+                screen_ctx.arc(cx, cz, 3, 0, 2 * Math.PI);
+                screen_ctx.fillStyle = 'lime';
+                screen_ctx.fill();
+
                 prev_hit = {y: hit.y, z: hit.z};
             } else {
                 prev_hit = null; // Reset si el haz sale fuera de pantalla
